@@ -4172,14 +4172,31 @@ Responde en modo PROACTIVO — qué ajustar ANTES de que pase. Sin markdown, sol
   const loadWeek = useCallback(async() => {
     const days=[];
     for(let i=-5;i<=0;i++){
-      try{const v=await load(todayKey().replace("log:","log:").replace(localDateStr(),dayStr(i)));
+      try{
+        const dateStr = dayStr(i);
+        const v=await load(todayKey().replace(localDateStr(),dateStr));
         const m=v?JSON.parse(v):{};
         const t=totals(m);
-        days.push({d:dayLabel(i),p:Math.round(t.p),c:Math.round(t.c),f:Math.round(t.f),k:Math.round(t.k),fi:Math.round(t.fi)});
-      }catch(e){days.push({d:dayLabel(i),p:0,c:0,f:0,k:0,fi:0});}
+        // Get workout log for that day to determine day type
+        const wl = await loadJSON(WORKOUT_KEY);
+        const dayEntry = wl?.[dateStr];
+        const dayType = getEffectiveDayType(gymDay, {[dateStr]: dayEntry});
+        // Get cycle phase for that day
+        const cycleAdj = getCycleCalAdjustment(profile, dateStr);
+        // Calculate targets for that specific day
+        const dayTgt = calcTargets(profile, dayType, 7.5);
+        const adjCarbs = (dayTgt.carbs||0) + (cycleAdj?.carbs||0);
+        const adjFat = (dayTgt.fat||0) + (cycleAdj?.fat||0);
+        days.push({
+          d:dayLabel(i),
+          p:Math.round(t.p),c:Math.round(t.c),f:Math.round(t.f),k:Math.round(t.k),fi:Math.round(t.fi),
+          tgt:{protein:dayTgt.protein,carbs:Math.round(adjCarbs),fat:Math.round(adjFat),calories:dayTgt.calories,fiber:dayTgt.fiber||26},
+          dayType
+        });
+      }catch(e){days.push({d:dayLabel(i),p:0,c:0,f:0,k:0,fi:0,tgt:null});}
     }
     setWeekData(days);
-  },[]);
+  },[gymDay,profile]);
 
   useEffect(()=>{if(view==="week")loadWeek();},[view]);
 
@@ -4776,13 +4793,19 @@ Responde en modo PROACTIVO — qué ajustar ANTES de que pase. Sin markdown, sol
             <div style={{fontSize:13,color:G.sft,marginBottom:16}}>Últimos 6 días.</div>
             {weekData.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:G.sft,fontSize:13}}>Cargando historial...</div>}
             {weekData.length>0&&[
-              {k:"p",l:"Proteína",c:"#C68B77",t:tgt.protein,u:"g"},
-              {k:"c",l:"Carbohidratos",c:"#5A7A62",t:tgt.carbs,u:"g"},
-              {k:"f",l:"Grasas",c:"#D4A853",t:tgt.fat,u:"g"},
-              {k:"k",l:"Calorías",c:"#A89EC0",t:tgt.calories,u:"kcal"},
-              {k:"fi",l:"Fibra",c:"#7A9A82",t:tgt.fiber,u:"g"}
-            ].map(m=>{
-              const avg=Math.round(weekData.reduce((a,d)=>a+(d[m.k]||0),0)/weekData.length);
+              {k:"p",l:"Proteína",c:"#C68B77",tk:"protein",u:"g"},
+              {k:"c",l:"Carbohidratos",c:"#5A7A62",tk:"carbs",u:"g"},
+              {k:"f",l:"Grasas",c:"#D4A853",tk:"fat",u:"g"},
+              {k:"k",l:"Calorías",c:"#A89EC0",tk:"calories",u:"kcal"},
+              {k:"fi",l:"Fibra",c:"#7A9A82",tk:"fiber",u:"g"}
+            ].map(mRaw=>{
+              // Use per-day target average — weighted by days with data
+              const daysWithData = weekData.filter(d=>d[mRaw.k]>0);
+              const avgTgt = daysWithData.length>0
+                ? Math.round(daysWithData.reduce((a,d)=>a+(d.tgt?.[mRaw.tk]||tgt[mRaw.tk]||0),0)/daysWithData.length)
+                : (tgt[mRaw.tk]||0);
+              const m = {...mRaw, t: avgTgt};
+              const avg=Math.round(weekData.reduce((a,d)=>a+(d[mRaw.k]||0),0)/Math.max(daysWithData.length,1));
               const pctAvg=Math.round((avg/(m.t||1))*100);
               const over=avg>m.t*1.12;
               const under=avg<m.t*.88;
@@ -4810,10 +4833,11 @@ Responde en modo PROACTIVO — qué ajustar ANTES de que pase. Sin markdown, sol
                   <div className="wb">
                     {weekData.map((d,i)=>{
                       const val=d[m.k]||0;
+                      const dayT = d.tgt?.[m.tk] || m.t;
                       const p2=val/mx;
-                      const tp=m.t/mx;
-                      const ov=val>m.t*1.1;
-                      const onTarget=val>=m.t*.88&&val<=m.t*1.1;
+                      const tp=dayT/mx;
+                      const ov=val>dayT*1.1;
+                      const onTarget=val>=dayT*.88&&val<=dayT*1.1;
                       const hasData=val>0;
                       const barColor=!hasData?"#EDE9E0":ov?G.err:onTarget?m.c:"rgba(200,132,90,0.4)";
                       return(
